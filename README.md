@@ -1,6 +1,6 @@
 # LINE: Large-scale information network embedding
 
-** Note this repository will no longer be maintained. For node embedding methods, please use our graph embedding system GraphVite: https://github.com/DeepGraphLearning/graphvite
+**Note this repository will no longer be maintained. For node embedding methods, please use our graph embedding system GraphVite: https://github.com/DeepGraphLearning/graphvite**
 
 **Introduction**
 
@@ -41,7 +41,7 @@ of bad 4
 - -threads, the total number of threads used; the default is 1.
 
 **Files in the folder**
-- line.cpp, the souce code of the LINE;
+- line.cpp, the souce code of the LINE;	
 - reconstruct.cpp, the code used for reconstructing the sparse networks into dense ones, which is described in Section 4.3;
 - normalize.cpp, the code for normalizing the embeddings (l2 normalization);
 - concatenate.cpp, the code for concatenating the embeddings with 1st-order and 2nd-order;

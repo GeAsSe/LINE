@@ -25,37 +25,80 @@ Publication: Jian Tang, Meng Qu, Mingzhe Wang, Ming Zhang, Jun Yan, Qiaozhu Mei.
 #define SIGMOID_BOUND 6
 #define NEG_SAMPLING_POWER 0.75
 
-const int hash_table_size = 30000000;
-const int neg_table_size = 1e8;
+const int hash_table_size = 30000000;  // 30 million
+const int neg_table_size = 1e8; // 100 million
 const int sigmoid_table_size = 1000;
 
 typedef float real;                    // Precision of float numbers
 
-struct ClassVertex {
+struct ClassVertex {  //representing vertex of a network，为什么degree是一个double值？
 	double degree;
 	char *name;
 };
 
-char network_file[MAX_STRING], embedding_file[MAX_STRING];
-struct ClassVertex *vertex;
-int is_binary = 0, num_threads = 1, order = 2, dim = 100, num_negative = 5;
-int *vertex_hash_table, *neg_table;
-int max_num_vertices = 1000, num_vertices = 0;
-long long total_samples = 1, current_sample_count = 0, num_edges = 0;
-real init_rho = 0.025, rho;
-real *emb_vertex, *emb_context, *sigmoid_table;
+char network_file[MAX_STRING], embedding_file[MAX_STRING];  //输入文件和输出文件的文件名最多100字符
+struct ClassVertex *vertex; //vertex consists of {name, degree}
+int is_binary = 0, num_threads = 1, order = 2, dim = 100, num_negative = 5;  // command line arguments and default values
 
+//vertex_hash_table是一个哈希表，其地址是顶点name的hash值，其值是顶点在 *vertex 顶点列表的下标
+int *vertex_hash_table, *neg_table;
+
+//num_vertices用于记录 *vertex数组 已经存入了多少个顶点，即下一个顶点应存放的下标
+//max_num_vertices用于设置 *vertex数组 的大小，当数组快满时，max_num_vertices自增1000，然后重新分配空间realloc
+int max_num_vertices = 1000, num_vertices = 0;
+
+// total_samples: total number of samples
+// current_samples: current processing number of samples
+// num_edges: 啥意思？
+long long total_samples = 1, current_sample_count = 0, num_edges = 0;
+
+real init_rho = 0.025, rho;  //初始学习率和学习率
+real *emb_vertex, *emb_context, *sigmoid_table;  //某顶点的嵌入向量，嵌入上下文向量（2nd order），sigmoid表
+
+
+//这里是处理输入文件所使用的变量
+// edge_source_id: 边源节点向量
+// edge_target_id: 边目标节点向量
+// edge_weight: 边权重向量
 int *edge_source_id, *edge_target_id;
 double *edge_weight;
 
 // Parameters for edge sampling
-long long *alias;
-double *prob;
+// 边缘概率分布？ 边缘采样相关参数
+long long *alias;  //顶点的别名向量
+double *prob;  //顶点的边缘概率向量
 
+
+/*
+typedef struct
+  {
+    const char *name;
+    unsigned long int max;
+    unsigned long int min;
+    size_t size;
+
+	// 下面的set和get，get_double都是函数指针
+	// set: 输入参数state，seed，返回值为void
+	// get: 输入参数state，返回int
+	// get_double: 输入参数state，返回double
+    void (*set) (void *state, unsigned long int seed);  
+    unsigned long int (*get) (void *state);
+    double (*get_double) (void *state);
+  } gsl_rng_type;
+*/
 const gsl_rng_type * gsl_T;
+
+/*
+typedef struct
+  {
+    const gsl_rng_type * type;
+    void *state;  //void指针可以存放任意类型的地址，且无需进行类型转换；如果要把void指针类型赋值给别人时，需要进行强制类型转换
+  } gsl_rng; 
+*/
 gsl_rng * gsl_r;
 
-/* Build a hash table, mapping each vertex name to a unique vertex id */
+/* Build a hash table, mapping each vertex name to a unique vertex id(unsigned int value) */
+// Hash: string -> unsigned int(上界为3千万)
 unsigned int Hash(char *key)
 {
 	unsigned int seed = 131;
@@ -64,30 +107,40 @@ unsigned int Hash(char *key)
 	{
 		hash = hash * seed + (*key++);
 	}
-	return hash % hash_table_size;
+	return hash % hash_table_size;  //hash值最大为 3千万, vertex 数量应远小于 3千万
 }
 
+// vertex_hash_table是一个长度为3千万的int数组，所有位置初始值置为-1
+// vertex_hash_table表示一个哈希表，其地址是顶点name的hash值，其值是顶点在 *vertex 顶点列表的下标
 void InitHashTable()
 {
 	vertex_hash_table = (int *)malloc(hash_table_size * sizeof(int));
 	for (int k = 0; k != hash_table_size; k++) vertex_hash_table[k] = -1;
 }
 
+//将指定的value插入到key对应的位置（地址addr）中
+//这里的value应该是顶点在 *vertex数组 的下标
 void InsertHashTable(char *key, int value)
 {
-	int addr = Hash(key);
-	while (vertex_hash_table[addr] != -1) addr = (addr + 1) % hash_table_size;
-	vertex_hash_table[addr] = value;
+	int addr = Hash(key);  //1. 先计算出key在hash_table中的位置（地址addr）
+	while (vertex_hash_table[addr] != -1){  //2. 如果对应位置已经有值了，则顺延到下一个位置（这是一个不可删除元素的hash_table!!!）
+		addr = (addr + 1) % hash_table_size;
+	}
+	vertex_hash_table[addr] = value;  //3. 令对应位置的值为给定的value
 }
 
+//根据指定的key搜索hash_table中对应的值
 int SearchHashTable(char *key)
 {
-	int addr = Hash(key);
-	while (1)
-	{
-		if (vertex_hash_table[addr] == -1) return -1;
+	int addr = Hash(key);  //1. 先计算出key在hash_table中的位置（地址addr）
+	while (1){
+		if (vertex_hash_table[addr] == -1) return -1;  //2.1 如果对应位置没有值，返回-1，说明key没有录入hash_table
+		//2.2 如果对应位置有值，查看此值对应的 ClassVertex变量 的名字是否等于key，若是，返回此value(即顶点在 *vertex数组 中的下标)
 		if (!strcmp(key, vertex[vertex_hash_table[addr]].name)) return vertex_hash_table[addr];
+		//3. 否则查找下一个位置
 		addr = (addr + 1) % hash_table_size;
+
+		//hash_table不可以装满，即图的顶点数必须小于3千万，否则会产生死循环
 	}
 	return -1;
 }
@@ -95,19 +148,27 @@ int SearchHashTable(char *key)
 /* Add a vertex to the vertex set */
 int AddVertex(char *name)
 {
+	//1. 如果顶点name大于100字符，截取其前100字符
 	int length = strlen(name) + 1;
 	if (length > MAX_STRING) length = MAX_STRING;
+
+	//2. 在 *vertex数组中， 加入新的顶点，令其name为传入的name，degree为0
 	vertex[num_vertices].name = (char *)calloc(length, sizeof(char));
 	strncpy(vertex[num_vertices].name, name, length-1);
 	vertex[num_vertices].degree = 0;
 	num_vertices++;
+
+	//3. 如果 *vertex数组大小快不够了，重新分配 *vertex空间，增加1000个位置
 	if (num_vertices + 2 >= max_num_vertices)
 	{
 		max_num_vertices += 1000;
 		vertex = (struct ClassVertex *)realloc(vertex, max_num_vertices * sizeof(struct ClassVertex));
 	}
+
+	//4. 将对应的name，*vertex数组下标 存放到hash_table中方面随机存取
 	InsertHashTable(name, num_vertices - 1);
-	return num_vertices - 1;
+	//5. 返回值为加入到顶点在 *vertex数组 中的下标
+	return num_vertices - 1; 
 }
 
 /* Read network from the training file */
@@ -118,17 +179,20 @@ void ReadData()
 	int vid;
 	double weight;
 
+	//1. 第一次读二进制文件network_file, 数边的数量，进行相应的初始化
 	fin = fopen(network_file, "rb");
 	if (fin == NULL)
 	{
 		printf("ERROR: network file not found!\n");
 		exit(1);
 	}
-	num_edges = 0;
-	while (fgets(str, sizeof(str), fin)) num_edges++;
+	num_edges = 0; //初始化边的数量为0
+	//一次读一行，边数量num_edges++
+	while (fgets(str, sizeof(str), fin)){
+		num_edges++;
+	}
 	fclose(fin);
 	printf("Number of edges: %lld          \n", num_edges);
-
 	edge_source_id = (int *)malloc(num_edges*sizeof(int));
 	edge_target_id = (int *)malloc(num_edges*sizeof(int));
 	edge_weight = (double *)malloc(num_edges*sizeof(double));
@@ -138,6 +202,7 @@ void ReadData()
 		exit(1);
 	}
 
+	//2. 第二次读二进制文件network_file
 	fin = fopen(network_file, "rb");
 	num_vertices = 0;
 	for (int k = 0; k != num_edges; k++)
