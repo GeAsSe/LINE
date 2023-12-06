@@ -25,8 +25,8 @@ Publication: Jian Tang, Meng Qu, Mingzhe Wang, Ming Zhang, Jun Yan, Qiaozhu Mei.
 #define SIGMOID_BOUND 6
 #define NEG_SAMPLING_POWER 0.75
 
-const int hash_table_size = 30000000;  // 30 million
-const int neg_table_size = 1e8; // 100 million
+const int hash_table_size = 30000000;  // 30 million  3千万
+const int neg_table_size = 1e8; // 100 million 1亿
 const int sigmoid_table_size = 1000;
 
 typedef float real;                    // Precision of float numbers
@@ -49,7 +49,7 @@ int max_num_vertices = 1000, num_vertices = 0;
 
 // total_samples: total number of samples
 // current_samples: current processing number of samples
-// num_edges: 啥意思？
+// num_edges: 记录边的数量
 long long total_samples = 1, current_sample_count = 0, num_edges = 0;
 
 real init_rho = 0.025, rho;  //初始学习率和学习率
@@ -172,6 +172,7 @@ int AddVertex(char *name)
 }
 
 /* Read network from the training file */
+// 读取网络数据，初始化边相关的三个向量, 初始化vertex_hash_table和vertex数组
 void ReadData()
 {
 	FILE *fin;
@@ -193,6 +194,8 @@ void ReadData()
 	}
 	fclose(fin);
 	printf("Number of edges: %lld          \n", num_edges);
+
+	//初始化边相关的三个向量，设置向量大小与边的数量相对应
 	edge_source_id = (int *)malloc(num_edges*sizeof(int));
 	edge_target_id = (int *)malloc(num_edges*sizeof(int));
 	edge_weight = (double *)malloc(num_edges*sizeof(double));
@@ -202,62 +205,84 @@ void ReadData()
 		exit(1);
 	}
 
-	//2. 第二次读二进制文件network_file
+	//2. 第二次读二进制文件network_file，对 每条边、每个顶点 的数据结构进行初始化
 	fin = fopen(network_file, "rb");
-	num_vertices = 0;
+	num_vertices = 0; //初始化顶点的数量为0
+
+	//根据边数，循环读行
 	for (int k = 0; k != num_edges; k++)
 	{
-		fscanf(fin, "%s %s %lf", name_v1, name_v2, &weight);
+		fscanf(fin, "%s %s %lf", name_v1, name_v2, &weight);  //读取一行，将对应值保存到局部变量中
 
-		if (k % 10000 == 0)
-		{
+		// 每读10000行，更新一次精确到三位小数的当前处理进度（百分数）
+		if (k % 10000 == 0){
 			printf("Reading edges: %.3lf%%%c", k / (double)(num_edges + 1) * 100, 13);
 			fflush(stdout);
 		}
 
+		// 检查源节点是否曾加入到 *vertex数组 中
 		vid = SearchHashTable(name_v1);
-		if (vid == -1) vid = AddVertex(name_v1);
+		// 若否则将其加入
+		if (vid == -1){
+			vid = AddVertex(name_v1);
+		}
+		// 更新 *vertex数组 中此节点的度，加上这条边的权重
 		vertex[vid].degree += weight;
+		// 令 此边的源节点 指向对应 *vertex数组 中的下标
 		edge_source_id[k] = vid;
 
+		// 检查目标节点是否曾加入到 *vertex数组 中
 		vid = SearchHashTable(name_v2);
-		if (vid == -1) vid = AddVertex(name_v2);
+		if (vid == -1){
+			vid = AddVertex(name_v2);
+		}
+		// 更新 *vertex数组 中此节点的度，加上这条边的权重
 		vertex[vid].degree += weight;
+		// 令 此边的目标节点 指向对应 *vertex数组 中的下标
 		edge_target_id[k] = vid;
 
+		//设置 此边的权重
 		edge_weight[k] = weight;
 	}
 	fclose(fin);
 	printf("Number of vertices: %d          \n", num_vertices);
 }
 
+// alias sampling 是一种高效的抽样算法，使用O(n)或O(nlogn)的时间进行预处理，之后每次采样只要O(1)的时间
+// alias sampling 方法的预处理需要构造两个数组：alias和prob
+// alias数组的长度为num_edges，每个元素是一个整数，用来存放结果，即采样边的下标
+// prob数组的长度为num_edges，每个元素是一个浮点数，用来存放采样概率：
+// 		若随机数rand_value2小于等于prob[k]，则采样边的下标为k
+// 		若随机数rand_value2大于prob[k]，则采样边的下标为alias[k]
+// InitAliasTable函数进行了这个预处理操作，构造了alias和prob数组
 /* The alias sampling algorithm, which is used to sample an edge in O(1) time. */
 void InitAliasTable()
 {
-	alias = (long long *)malloc(num_edges*sizeof(long long));
-	prob = (double *)malloc(num_edges*sizeof(double));
+	alias = (long long *)malloc(num_edges*sizeof(long long));  //alias是一个long long数组
+	prob = (double *)malloc(num_edges*sizeof(double));  //prob是一个double数组
 	if (alias == NULL || prob == NULL)
 	{
 		printf("Error: memory allocation failed!\n");
 		exit(1);
 	}
 
-	double *norm_prob = (double*)malloc(num_edges*sizeof(double));
-	long long *large_block = (long long*)malloc(num_edges*sizeof(long long));
-	long long *small_block = (long long*)malloc(num_edges*sizeof(long long));
+	double *norm_prob = (double*)malloc(num_edges*sizeof(double));  //norm_prob是选择每条边的norm概率数组， norm_prob[k] = edge_weight[k] / sum(edge_weight) * num_edges
+	long long *large_block = (long long*)malloc(num_edges*sizeof(long long));  //large_block数组，用于存放norm概率大于1的边的下标
+	long long *small_block = (long long*)malloc(num_edges*sizeof(long long));  //small_block数组，用于存放norm概率小于1的边的下标
 	if (norm_prob == NULL || large_block == NULL || small_block == NULL)
 	{
 		printf("Error: memory allocation failed!\n");
 		exit(1);
 	}
 
-	double sum = 0;
-	long long cur_small_block, cur_large_block;
-	long long num_small_block = 0, num_large_block = 0;
+	double sum = 0;  //sum为所有边的权重之和
+	long long cur_small_block, cur_large_block;  //这两个指针用于遍历small_block和large_block数组
+	long long num_small_block = 0, num_large_block = 0;  //这两个指针用于初始化small_block和large_block数组，并记录数组大小
 
-	for (long long k = 0; k != num_edges; k++) sum += edge_weight[k];
-	for (long long k = 0; k != num_edges; k++) norm_prob[k] = edge_weight[k] * num_edges / sum;
+	for (long long k = 0; k != num_edges; k++) sum += edge_weight[k];  //计算所有边的权重之和 O(n)
+	for (long long k = 0; k != num_edges; k++) norm_prob[k] = edge_weight[k] * num_edges / sum;  //计算每条边的norm概率并赋值给norm_prob数组 O(n)
 
+	//将norm概率大于等于1的边的下标存放到large_block数组中，将norm概率小于1的边的下标存放到small_block数组中
 	for (long long k = num_edges - 1; k >= 0; k--)
 	{
 		if (norm_prob[k]<1)
@@ -266,19 +291,27 @@ void InitAliasTable()
 			large_block[num_large_block++] = k;
 	}
 
+	//若num_small_block或num_large_block不为0，则进行以下操作
 	while (num_small_block && num_large_block)
 	{
+		//倒过来遍历small_block和large_block数组
 		cur_small_block = small_block[--num_small_block];
 		cur_large_block = large_block[--num_large_block];
+
+		//cur_small_block是边的下标，其norm_prob概率即为prob(阈值概率)
 		prob[cur_small_block] = norm_prob[cur_small_block];
+		//其alias即为对应cur_large_block(也是一个边的下标)
 		alias[cur_small_block] = cur_large_block;
+		// （**关键一步）从cur_large_block的norm_prob中挖去一部分，来补全cur_small_block的norm_prob，使其为1
 		norm_prob[cur_large_block] = norm_prob[cur_large_block] + norm_prob[cur_small_block] - 1;
+		//在这之后，cur_large_block的norm_prob可能大于1，也可能小于1，所以要重新放回到large_block或small_block中
 		if (norm_prob[cur_large_block] < 1)
 			small_block[num_small_block++] = cur_large_block;
 		else
 			large_block[num_large_block++] = cur_large_block;
 	}
 
+	//浮点数计算可能有误差，如果有剩余的prob没有处理，则直接赋值为1
 	while (num_large_block) prob[large_block[--num_large_block]] = 1;
 	while (num_small_block) prob[small_block[--num_small_block]] = 1;
 
@@ -287,6 +320,7 @@ void InitAliasTable()
 	free(large_block);
 }
 
+//用两个[0,1]之间的随机数进行采样，第一个决定下标，第二个根据prob[k]决定是k还是alias[k]
 long long SampleAnEdge(double rand_value1, double rand_value2)
 {
 	long long k = (long long)num_edges * rand_value1;
@@ -294,28 +328,49 @@ long long SampleAnEdge(double rand_value1, double rand_value2)
 }
 
 /* Initialize the vertex embedding and the context embedding */
+// 根据顶点数量num_vertices和嵌入向量维度dim，初始化顶点嵌入向量和上下文嵌入向量
 void InitVector()
 {
 	long long a, b;
 
+	//对嵌入向量进行初始化
 	a = posix_memalign((void **)&emb_vertex, 128, (long long)num_vertices * dim * sizeof(real));
 	if (emb_vertex == NULL) { printf("Error: memory allocation failed\n"); exit(1); }
-	for (b = 0; b < dim; b++) for (a = 0; a < num_vertices; a++)
-		emb_vertex[a * dim + b] = (rand() / (real)RAND_MAX - 0.5) / dim;
+	//二重循环，对每个顶点的每个维度，随机初始化一个[-0.5/dim, 0.5/dim]之间的值
+	//emb_vertex是一个二维数组，其构造图示意如下：
+	/*
+	[
+	vertex1[d1, d2, ..., dn]
+	vertex2[d1, d2, ..., dn]
+	...
+	vertexm[d1, d2, ..., dn]
+	]
+	*/
+	for (b = 0; b < dim; b++){
+		for (a = 0; a < num_vertices; a++){
+			emb_vertex[a * dim + b] = (rand() / (real)RAND_MAX - 0.5) / dim;
+		}
+	}
 
+	//对嵌入上下文向量进行初始化，流程同上，只是emb_context初始化所有位置为0
 	a = posix_memalign((void **)&emb_context, 128, (long long)num_vertices * dim * sizeof(real));
 	if (emb_context == NULL) { printf("Error: memory allocation failed\n"); exit(1); }
 	for (b = 0; b < dim; b++) for (a = 0; a < num_vertices; a++)
 		emb_context[a * dim + b] = 0;
 }
 
+// Negative Table用于负采样，其长度为1亿，每个位置存放一个顶点的下标
+// 对于任意顶点u，其被采样的概率正比于 degree(u)^NEG_SAMPLING_POWER
+// 这个neg_table把采样的概率处理成1亿个等长的区间，每个顶点对应的区间的数正比于其被采样的概率。
 /* Sample negative vertex samples according to vertex degrees */
 void InitNegTable()
 {
-	double sum = 0, cur_sum = 0, por = 0;
+	double sum = 0, cur_sum = 0, por = 0;//portion
 	int vid = 0;
-	neg_table = (int *)malloc(neg_table_size * sizeof(int));
+	neg_table = (int *)malloc(neg_table_size * sizeof(int)); //neg_table是一个int数组，长度为1亿
+	//计算所有顶点的 degree^NEG_SAMPLING_POWER 之和，计为sum
 	for (int k = 0; k != num_vertices; k++) sum += pow(vertex[k].degree, NEG_SAMPLING_POWER);
+	//构造neg_table, 
 	for (int k = 0; k != neg_table_size; k++)
 	{
 		if ((double)(k + 1) / neg_table_size > por)
@@ -329,6 +384,7 @@ void InitNegTable()
 }
 
 /* Fastly compute sigmoid function */
+// 构造[-SIGMOID_BOUND, SIGMOID_BOUND]之间的1000个等长区间，每个区间的sigmoid值存放在sigmoid_table中
 void InitSigmoidTable()
 {
 	real x;
@@ -340,6 +396,12 @@ void InitSigmoidTable()
 	}
 }
 
+//带分段的sigmoid函数：
+/*
+f(x) = 1, x > 6
+f(x) = 1 / (1 + exp(-x)), -6 <= x <= 6, 这一步直接查表计算
+f(x) = 0, x < -6
+*/
 real FastSigmoid(real x)
 {
 	if (x > SIGMOID_BOUND) return 1;
@@ -349,6 +411,7 @@ real FastSigmoid(real x)
 }
 
 /* Fastly generate a random integer */
+//这个rand函数用于对负采样表产生[0, neg_table_size)之间的随机数
 int Rand(unsigned long long &seed)
 {
 	seed = seed * 25214903917 + 11;
@@ -356,13 +419,22 @@ int Rand(unsigned long long &seed)
 }
 
 /* Update embeddings */
+// 使用AliasMethod进行边的采样，得到源节点 u，目标节点 v；
+// vec_u 为源节点的embedding，vec_v 为目标节点的embedding
+// 
 void Update(real *vec_u, real *vec_v, real *vec_error, int label)
 {
 	real x = 0, g;
-	for (int c = 0; c != dim; c++) x += vec_u[c] * vec_v[c];
+	for (int c = 0; c != dim; c++){
+		x += vec_u[c] * vec_v[c];
+	}
 	g = (label - FastSigmoid(x)) * rho;
-	for (int c = 0; c != dim; c++) vec_error[c] += g * vec_v[c];
-	for (int c = 0; c != dim; c++) vec_v[c] += g * vec_u[c];
+	for (int c = 0; c != dim; c++){
+		vec_error[c] += g * vec_v[c];
+	}
+	for (int c = 0; c != dim; c++){
+		vec_v[c] += g * vec_u[c];
+	}
 }
 
 void *TrainLINEThread(void *id)
@@ -485,6 +557,7 @@ int ArgPos(char *str, int argc, char **argv) {
 	return -1;
 }
 
+// ./line -train net.txt -output vec.txt -binary 1 -size 200 -order 2 -negative 5 -samples 100 -rho 0.025 -threads 20
 int main(int argc, char **argv) {
 	int i;
 	if (argc == 1) {
