@@ -411,7 +411,7 @@ real FastSigmoid(real x)
 }
 
 /* Fastly generate a random integer */
-//这个rand函数用于对负采样表产生[0, neg_table_size)之间的随机数
+//这个Rand函数用于对负采样表产生[0, neg_table_size)之间的随机数
 int Rand(unsigned long long &seed)
 {
 	seed = seed * 25214903917 + 11;
@@ -437,8 +437,8 @@ void Update(real *vec_u, real *vec_v, real *vec_error, int label)
 	}
 }
 
-void *TrainLINEThread(void *id)
-{
+void *TrainLINEThread(void *id) {
+	// u是源节点在vertex列表中的下标，v是目标节点在vertex列表中的下标，lu是源节点的embedding在emb_vertex中的起始位置，lv是目标节点的embedding在emb_vertex中的起始位置
 	long long u, v, lu, lv, target, label;
 	long long count = 0, last_count = 0, curedge;
 	unsigned long long seed = (long long)id;
@@ -449,24 +449,29 @@ void *TrainLINEThread(void *id)
 		//judge for exit
 		if (count > total_samples / num_threads + 2) break;
 
+		//每处理10000条边，更新一次学习率rho，更新一次当前处理进度
 		if (count - last_count > 10000)
 		{
 			current_sample_count += count - last_count;
 			last_count = count;
 			printf("%cRho: %f  Progress: %.3lf%%", 13, rho, (real)current_sample_count / (real)(total_samples + 1) * 100);
 			fflush(stdout);
+			// 令学习率rho随着当前处理进度的增加而减小
 			rho = init_rho * (1 - current_sample_count / (real)(total_samples + 1));
 			if (rho < init_rho * 0.0001) rho = init_rho * 0.0001;
 		}
 
+		// [正采样] 随机采样一条边，得到源节点u，目标节点v
 		curedge = SampleAnEdge(gsl_rng_uniform(gsl_r), gsl_rng_uniform(gsl_r));
 		u = edge_source_id[curedge];
 		v = edge_target_id[curedge];
 
 		lu = u * dim;
-		for (int c = 0; c != dim; c++) vec_error[c] = 0;
+		for (int c = 0; c != dim; c++){
+			vec_error[c] = 0;
+		}
 
-		// NEGATIVE SAMPLING
+		// [负采样] NEGATIVE SAMPLING
 		for (int d = 0; d != num_negative + 1; d++)
 		{
 			if (d == 0)
@@ -483,7 +488,9 @@ void *TrainLINEThread(void *id)
 			if (order == 1) Update(&emb_vertex[lu], &emb_vertex[lv], vec_error, label);
 			if (order == 2) Update(&emb_vertex[lu], &emb_context[lv], vec_error, label);
 		}
-		for (int c = 0; c != dim; c++) emb_vertex[c + lu] += vec_error[c];
+		for (int c = 0; c != dim; c++) {
+			emb_vertex[c + lu] += vec_error[c];
+		}
 
 		count++;
 	}
@@ -491,15 +498,16 @@ void *TrainLINEThread(void *id)
 	pthread_exit(NULL);
 }
 
+//Output函数定义了embedding文件的格式
 void Output()
 {
 	FILE *fo = fopen(embedding_file, "wb");
-	fprintf(fo, "%d %d\n", num_vertices, dim);
-	for (int a = 0; a < num_vertices; a++)
+	fprintf(fo, "%d %d\n", num_vertices, dim);  //第一行记录嵌入矩阵的行数和列数
+	for (int a = 0; a < num_vertices; a++)  //之后每一行记录一个顶点的嵌入向量
 	{
-		fprintf(fo, "%s ", vertex[a].name);
-		if (is_binary) for (int b = 0; b < dim; b++) fwrite(&emb_vertex[a * dim + b], sizeof(real), 1, fo);
-		else for (int b = 0; b < dim; b++) fprintf(fo, "%lf ", emb_vertex[a * dim + b]);
+		fprintf(fo, "%s ", vertex[a].name); //第一个元素是顶点的名字
+		if (is_binary) for (int b = 0; b < dim; b++) fwrite(&emb_vertex[a * dim + b], sizeof(real), 1, fo); //如果是二进制文件，直接写入
+		else for (int b = 0; b < dim; b++) fprintf(fo, "%lf ", emb_vertex[a * dim + b]); //如果是文本文件，写入时加空格
 		fprintf(fo, "\n");
 	}
 	fclose(fo);
@@ -536,8 +544,14 @@ void TrainLINE() {
 
 	clock_t start = clock();
 	printf("--------------------------------\n");
-	for (a = 0; a < num_threads; a++) pthread_create(&pt[a], NULL, TrainLINEThread, (void *)a);
-	for (a = 0; a < num_threads; a++) pthread_join(pt[a], NULL);
+
+	//创建多个线程来进行TrainLINEThread工作；
+	for (a = 0; a < num_threads; a++){
+		pthread_create(&pt[a], NULL, TrainLINEThread, (void *)a);
+	}
+	for (a = 0; a < num_threads; a++){
+		pthread_join(pt[a], NULL);
+	}
 	printf("\n");
 	clock_t finish = clock();
 	printf("Total time: %lf\n", (double)(finish - start) / CLOCKS_PER_SEC);
@@ -545,14 +559,17 @@ void TrainLINE() {
 	Output();
 }
 
+//给定要查找的参数选项和参数列表，如果找到了对应的参数选项，返回其在参数列表中的下标，否则返回-1
 int ArgPos(char *str, int argc, char **argv) {
 	int a;
-	for (a = 1; a < argc; a++) if (!strcmp(str, argv[a])) {
-		if (a == argc - 1) {
-			printf("Argument missing for %s\n", str);
-			exit(1);
+	for (a = 1; a < argc; a++){
+		if (!strcmp(str, argv[a])) {
+			if (a == argc - 1) {
+				printf("Argument missing for %s\n", str);
+				exit(1);
+			}
+			return a;
 		}
-		return a;
 	}
 	return -1;
 }
@@ -560,6 +577,7 @@ int ArgPos(char *str, int argc, char **argv) {
 // ./line -train net.txt -output vec.txt -binary 1 -size 200 -order 2 -negative 5 -samples 100 -rho 0.025 -threads 20
 int main(int argc, char **argv) {
 	int i;
+	//如果没有带参数运行命令，打印帮助信息
 	if (argc == 1) {
 		printf("LINE: Large Information Network Embedding\n\n");
 		printf("Options:\n");
@@ -595,7 +613,7 @@ int main(int argc, char **argv) {
 	if ((i = ArgPos((char *)"-samples", argc, argv)) > 0) total_samples = atoi(argv[i + 1]);
 	if ((i = ArgPos((char *)"-rho", argc, argv)) > 0) init_rho = atof(argv[i + 1]);
 	if ((i = ArgPos((char *)"-threads", argc, argv)) > 0) num_threads = atoi(argv[i + 1]);
-	total_samples *= 1000000;
+	total_samples *= 1000000; //samples选项的单位是百万
 	rho = init_rho;
 	vertex = (struct ClassVertex *)calloc(max_num_vertices, sizeof(struct ClassVertex));
 	TrainLINE();
