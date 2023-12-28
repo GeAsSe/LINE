@@ -173,7 +173,7 @@ void ReadData()
 		edge_weight[k] = weight;
 	}
 	fclose(fin);
-	printf("Number of vertices: %lld          \n", num_vertices);
+	printf("Number of vertices: %d          \n", num_vertices);
 }
 
 /* The alias sampling algorithm, which is used to sample an edge in O(1) time. */
@@ -379,7 +379,7 @@ void Output()
 }
 
 void TrainLINE() {
-	long a;
+	int a;
 	boost::thread *pt = new boost::thread[num_threads];
 
 	if (order != 1 && order != 2)
